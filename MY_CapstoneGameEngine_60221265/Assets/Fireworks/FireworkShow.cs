@@ -29,6 +29,10 @@ namespace Capstone.Fireworks
         [SerializeField] private Texture2D sourceImage;
         [Tooltip("Auto는 투명 컬러 이미지의 원래 색을 사용하고, 불투명 흑백 마스크의 밝기를 불씨의 강도로 사용합니다.")]
         [SerializeField] private ImageSampling sampling = ImageSampling.Auto;
+        [Header("Audio")]
+        [Tooltip("공연 중 재생할 음원 파일을 여기에 드래그하세요.")]
+        [SerializeField] private AudioClip backgroundMusic;
+
         [Header("Show")]
         [SerializeField] private Camera showCamera;
         [SerializeField] private SpriteRenderer backdrop;
@@ -39,6 +43,7 @@ namespace Capstone.Fireworks
         [SerializeField] private FireworkCue[] cues;
 
         private readonly List<FireworkShell> liveShells = new List<FireworkShell>();
+        private AudioSource musicSource;
         private bool playing;
 
         private void OnEnable()
@@ -66,9 +71,24 @@ namespace Capstone.Fireworks
             StartCoroutine(Perform());
         }
 
+        private void StartMusic()
+        {
+            if (!backgroundMusic) return;
+            if (!musicSource)
+            {
+                musicSource = gameObject.AddComponent<AudioSource>();
+                musicSource.playOnAwake = false;
+                musicSource.spatialBlend = 0f;
+                musicSource.loop = true;
+            }
+            musicSource.clip = backgroundMusic;
+            musicSource.Play();
+        }
+
         private IEnumerator Perform()
         {
             ImageFireworkPattern pattern = ImageFireworkPattern.Sample(sourceImage, sampling);
+            StartMusic();
             float startTime = Time.time;
             bool skippedIntro = false;
             for (int i = 0; i < cues.Length; i++)
@@ -93,6 +113,7 @@ namespace Capstone.Fireworks
             }
 
             while (liveShells.Count > 0) yield return null;
+            if (musicSource) musicSource.Stop();
             playing = false;
             playButton.image.sprite = replayArtwork;
             playButton.gameObject.SetActive(true);
@@ -110,6 +131,7 @@ namespace Capstone.Fireworks
         {
             playButton.onClick.RemoveListener(PlayShow);
             StopAllCoroutines();
+            if (musicSource) musicSource.Stop();
             foreach (FireworkShell shell in liveShells)
                 if (shell) shell.Cancel();
             liveShells.Clear();
