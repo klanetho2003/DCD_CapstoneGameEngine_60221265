@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -10,11 +11,26 @@ namespace Capstone.Fireworks
     {
         private const int GridLimit = 96;
         private const float Span = 5.8f;
-        private const float Lifetime = 2.7f;
-        private const float Formation = .32f;
 
-        private readonly List<ParticleSystem.Particle> points;
-        private ImageFireworkPattern(List<ParticleSystem.Particle> points) => this.points = points;
+        private struct Pixel
+        {
+            public Vector3 target;
+            public Color32 color;
+        }
+
+        private struct Flight
+        {
+            public Vector3 start, end;
+            public float delay, travelTime, fadeStart, lifetime;
+        }
+
+        private readonly Pixel[] pixels;
+        private readonly float diameter;
+        private ImageFireworkPattern(Pixel[] pixels, float diameter)
+        {
+            this.pixels = pixels;
+            this.diameter = diameter;
+        }
 
         public static ImageFireworkPattern Sample(Texture2D image, ImageSampling mode)
         {
@@ -28,7 +44,7 @@ namespace Capstone.Fireworks
             bool useLuma = mode == ImageSampling.BrightnessMask ||
                 (mode == ImageSampling.Auto && (singleRed || IsOpaqueGrayscale(pixels)));
             float step = Span / Mathf.Max(width, height);
-            var points = new List<ParticleSystem.Particle>(pixels.Length);
+            var points = new List<Pixel>(pixels.Length);
             for (int y = 0; y < height; y++)
             for (int x = 0; x < width; x++)
             {
@@ -51,17 +67,18 @@ namespace Capstone.Fireworks
                 }
                 if (c.a < 6) continue;
                 Vector3 target = new Vector3(x + .5f - width * .5f, y + .5f - height * .5f) * step;
-                points.Add(new ParticleSystem.Particle
-                {
-                    velocity = target,
-                    startColor = c,
-                    startSize = step * 1.65f,
-                    startLifetime = Lifetime,
-                    remainingLifetime = Lifetime,
-                    randomSeed = (uint)(index + 1)
-                });
+                points.Add(new Pixel { target = target, color = c });
             }
-            return points.Count == 0 ? null : new ImageFireworkPattern(points);
+            int particleCount = points.Count / 2;
+            if (particleCount == 0) return null;
+
+            // Choose one visible pixel from each pair across the whole image.
+            // A fixed seed preserves the same details when the show is replayed.
+            var selected = new Pixel[particleCount];
+            var selection = new System.Random(37);
+            for (int i = 0; i < selected.Length; i++)
+                selected[i] = points[2 * i + selection.Next(2)];
+            return new ImageFireworkPattern(selected, step * 1.65f);
         }
 
         private static bool IsOpaqueGrayscale(Color32[] pixels)
@@ -97,41 +114,90 @@ namespace Capstone.Fireworks
                 RenderTexture.active = previous;
                 GL.sRGBWrite = previousWrite;
                 RenderTexture.ReleaseTemporary(buffer);
-                if (copy) Object.Destroy(copy);
+                if (copy)
+                {
+                    if (Application.isPlaying) Object.Destroy(copy);
+                    else Object.DestroyImmediate(copy);
+                }
             }
         }
 
-        public void Play(ParticleSystem system, Vector3 origin, float scale)
+        public IEnumerator Play(ParticleSystem system, Vector3 origin, float scale, System.Random random)
         {
             var main = system.main;
             main.gravityModifier = 0f;
-            main.maxParticles = points.Count;
+            main.maxParticles = pixels.Length;
             var trails = system.trails;
             trails.enabled = false;
             var velocity = system.velocityOverLifetime;
-            velocity.enabled = true;
-            // Integral of this triangular speed curve is one world-space target offset.
-            float initialSpeed = 2f / (Formation * Lifetime);
-            float slope = -initialSpeed / Formation;
-            var brake = new AnimationCurve(new Keyframe(0f, initialSpeed, 0f, slope),
-                new Keyframe(Formation, 0f, slope, 0f), new Keyframe(1f, 0f, 0f, 0f));
-            velocity.speedModifier = new ParticleSystem.MinMaxCurve(1f, brake);
-            var fade = new Gradient();
-            fade.SetKeys(new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(Color.white, 1f) },
-                new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(1f, .70f),
-                        new GradientAlphaKey(0f, 1f) });
+            velocity.enabled = false;
             var color = system.colorOverLifetime;
-            color.enabled = true;
-            color.color = fade;
-            var batch = points.ToArray();
+            color.enabled = false;
+
+            var flights = new Flight[pixels.Length];
+            var batch = new ParticleSystem.Particle[pixels.Length];
             for (int i = 0; i < batch.Length; i++)
             {
-                batch[i].position = origin;
-                batch[i].velocity *= scale;
-                batch[i].startSize *= scale;
+                Flight flight = MakeFlight(pixels[i].target, scale, random);
+                flights[i] = flight;
+                batch[i] = new ParticleSystem.Particle
+                {
+                    position = origin + flight.start,
+                    startColor = pixels[i].color,
+                    startSize = diameter * scale,
+                    startLifetime = flight.lifetime,
+                    remainingLifetime = flight.lifetime,
+                    randomSeed = (uint)(i + 1)
+                };
             }
             system.Play(false);
             system.SetParticles(batch, batch.Length);
+            while (true)
+            {
+                yield return null;
+                int alive = system.GetParticles(batch);
+                if (alive == 0) yield break;
+                for (int i = 0; i < alive; i++)
+                {
+                    // Shuriken can reorder survivors when another spark dies.
+                    int id = (int)batch[i].randomSeed - 1;
+                    Flight flight = flights[id];
+                    float age = flight.lifetime - batch[i].remainingLifetime;
+                    float time = Mathf.Clamp01((age - flight.delay) / flight.travelTime);
+                    float remaining = 1f - time;
+                    float easeOutCubic = 1f - remaining * remaining * remaining;
+                    batch[i].position = origin + Vector3.Lerp(flight.start, flight.end, easeOutCubic);
+                    if (age > flight.fadeStart)
+                    {
+                        float opacity = 1f - Mathf.SmoothStep(0f, 1f,
+                            (age - flight.fadeStart) / (flight.lifetime - flight.fadeStart));
+                        Color32 tint = pixels[id].color;
+                        tint.a = (byte)Mathf.RoundToInt(tint.a * opacity);
+                        batch[i].startColor = tint;
+                    }
+                }
+                system.SetParticles(batch, alive);
+            }
+        }
+
+        private static Flight MakeFlight(Vector3 pixel, float scale, System.Random random)
+        {
+            float Range(float low, float high) => Mathf.Lerp(low, high, (float)random.NextDouble());
+            Vector3 Radial(float radius)
+            {
+                float angle = Range(0f, Mathf.PI * 2f);
+                return new Vector3(radius * Mathf.Cos(angle), radius * Mathf.Sin(angle), Range(-.13f,.13f) * radius);
+            }
+            float delay = Range(0f, .16f);
+            float travel = Range(.94f, 1.28f);
+            float fade = delay + travel + Range(.1f, .25f);
+            return new Flight
+            {
+                start = Radial(.13f * Mathf.Sqrt(Range(0f, 1f))) * scale,
+                end = pixel * scale,
+                delay = delay, travelTime = travel, fadeStart = fade,
+                lifetime = fade + Range(.70f, 1.16f)
+            };
         }
     }
 }

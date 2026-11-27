@@ -52,7 +52,7 @@ namespace Capstone.Fireworks
             {
                 case BloomShape.Image when imagePattern != null:
                     bloom.GetComponent<ParticleSystemRenderer>().sharedMaterial = imageSparkMaterial;
-                    imagePattern.Play(bloom, origin, scale);
+                    StartCoroutine(imagePattern.Play(bloom, origin, scale, random));
                     return;
                 case BloomShape.Heart:
                     BeginPattern(heartLook, .09f);
