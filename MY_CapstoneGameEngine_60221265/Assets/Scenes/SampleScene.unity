@@ -1374,6 +1374,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Capstone.Fireworks.FireworkShow
   sourceImage: {fileID: 2800000, guid: b64a84cf28c25c04f95246f9a526a2a3, type: 3}
   sampling: 0
+  backgroundMusic: {fileID: 8300000, guid: cef3b6014bedd4e42993cfc5083e68ad, type: 3}
   showCamera: {fileID: 330585545}
   backdrop: {fileID: 1161803366}
   shellPrefab: {fileID: 2204825290529630945, guid: ff1d91c6f6098c3418f03dffffeeb1ed, type: 3}
